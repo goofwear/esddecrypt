@@ -88,16 +88,12 @@ typedef struct _WIM_XML_INFO {
 } WIM_XML_INFO;
 
 #define SHA1_HASH_SIZE 20
-
-#pragma warning( push )
-#pragma warning( disable:4200 )
 typedef struct _WIM_HASH_TABLE {
 	DWORD size;
 	DWORD num_elements;
 	DWORD chunk_size;
 	BYTE hash_list[][SHA1_HASH_SIZE];
 } WIM_HASH_TABLE;
-#pragma warning( pop )
 
 typedef struct _WIM_INFO {
     FILE *wim_file;
@@ -105,6 +101,7 @@ typedef struct _WIM_INFO {
     WIM_XML_INFO xml;
     RSAPRIVKEYBLOB crypto_key;
     SIMPLEKEYBLOB session_key;
+    int session_key_size;
     int num_encrypted_ranges;
     RANGE_INFO *encrypted_ranges;
 } WIM_INFO;
