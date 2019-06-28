@@ -14,6 +14,8 @@
 #define ESD_IMAGE_VERSION 0xe00UL
 #define ESD_IMAGE_FLAGS ( FLAG_HEADER_COMPRESSION | FLAG_HEADER_RP_FIX | FLAG_HEADER_COMPRESS_LZMS )
 
+#define VERSION L"20190628"
+
 const WCHAR *known_base64_crypto_keys[] = {
     //14901
     L"BwIAAACkAABSU0EyAAQAAAEAAQCBK154a48ca1NUi4rwPvAb25g7qltZ0xm5HYKYLYA7AWrSEsmGduL1lgbH0GB0hLVp3qK3U6XBpudvCLTkcozadaKisCLDvCuAboPRgpkBjQ0g9jqU1bECrRgESQo+zypLSBtgL1vVsgHncefceZjxirjM6IeYV1Vul2St0BOcvDFQqnFLfFwehCUUs1GUQhNVOJeYUVGkEQxpvMCrO6jWzOvvFiieN6zB0ygCCsnLsk2Ns4JXe4SnsmgGf7tw+f5RjKBv7Hk3wyblOm0vzPnh6K77KhAiOcvO30cxEMHyK/kYOj8I1vHndjlqhvyD3e8qplpjQUVXe0DKYx1NTF69UdRqRv7gLwfvmE6hmJaTbe+N0DoC8Ie27WYBUiZfJSypbL282a9Vu4lNplTox6dfzf5hdE1KLiDptpCm+5rGTeEIQNIjYj7Ju0lmdDg5YobuCduao2ZsxVhrSfg0mBcsUa69uSL2mLtorZDoSS0ZEyoGudDapHiT7zd+HBQiUZaE1H90V/Zfjmmt/sbpXd+kDWs2+cRjCVRvSpqD8OSvSVO2ECR0QzLF4LpssF5G5exCs+ABvH5UMgu74rAGHPbqgSURURvxltzrVIFe1JZcv4YZwsGgi7JaKMdzF5EsLKhiLmqU0++tA5gKNFC4TwuUCP7X5eFDv7FTKWf3fmtKTE05sakAuAgTm1IPBZ5B5UtWctUwfLknsj4JlO4WQMd+sBg/NaQP9jRberZFyg0RRTXxJVRx+aBDaJdh66hF/gU=",
@@ -259,14 +261,19 @@ BOOL decrypt_blocks(WIM_INFO *esd)
     HCRYPTPROV hProv = NULL;
     HCRYPTKEY hPubKey = NULL;
     HCRYPTKEY hKey = NULL;
-    BOOL success = TRUE;
 
     if ( !CryptAcquireContextW(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT) ||
         !CryptImportKey(hProv, (BYTE *)&esd->crypto_key, sizeof(esd->crypto_key), 0, CRYPT_EXPORTABLE | CRYPT_OAEP, &hPubKey) ||
         !CryptImportKey(hProv, (BYTE *)&esd->session_key, esd->session_key_size, hPubKey, CRYPT_EXPORTABLE | CRYPT_OAEP, &hKey) )
     {
-        success = FALSE;
-        goto fail;
+        if ( hPubKey != NULL )
+            CryptDestroyKey(hPubKey);
+        if ( hKey != NULL )
+            CryptDestroyKey(hKey);
+        if ( hProv != NULL )
+            CryptReleaseContext(hProv, 0);
+
+        return FALSE;
     }
 
     for ( int i = 0; i < esd->num_encrypted_ranges; i++ )
@@ -287,7 +294,6 @@ BOOL decrypt_blocks(WIM_INFO *esd)
         free(data);
     }
 
-fail:
     if ( hPubKey != NULL )
         CryptDestroyKey(hPubKey);
     if ( hKey != NULL )
@@ -295,21 +301,25 @@ fail:
     if ( hProv != NULL )
         CryptReleaseContext(hProv, 0);
 
-    return success;
+    return TRUE;
 }
 
 BOOL update_integrity_info(WIM_INFO *esd, WIM_HASH_TABLE **updated_table)
 {
     HCRYPTPROV hProv = NULL;
     HCRYPTHASH hHash = NULL;
-    BOOL success = TRUE;
 
     if ( !CryptAcquireContextW(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT) ||
         !CryptCreateHash(hProv, CALG_SHA1, 0, 0, &hHash) )
     {
         fwprintf(stderr, L"ERROR: Error while creating hash objects.\n");
-        success = FALSE;
-        goto fail;
+
+        if ( hHash != NULL )
+            CryptDestroyHash(hHash);
+        if ( hProv != NULL )
+            CryptReleaseContext(hProv, 0);
+
+        return FALSE;
     }
 
     WIM_HASH_TABLE *hash_table = (WIM_HASH_TABLE *)malloc(esd->hdr.integrity_table.size_in_wim);
@@ -351,13 +361,12 @@ BOOL update_integrity_info(WIM_INFO *esd, WIM_HASH_TABLE **updated_table)
     free(data);
     *updated_table = hash_table;
 
-fail:
     if ( hHash != NULL )
         CryptDestroyHash(hHash);
     if ( hProv != NULL )
         CryptReleaseContext(hProv, 0);
 
-    return success;
+    return TRUE;
 }
 
 BOOL update_xml_info(WIM_INFO *esd, ULONGLONG *wim_total_bytes)
@@ -384,19 +393,18 @@ BOOL update_wim_info(WIM_INFO *esd)
 {
     WIM_HASH_TABLE *new_integrity_table = NULL;
     ULONGLONG total_bytes;
-    BOOL success = TRUE;
 
     if ( !update_integrity_info(esd, &new_integrity_table) ||
         !update_xml_info(esd, &total_bytes) )
     {
-        success = FALSE;
-        goto fail;
+        return FALSE;
     }
 
     esd->hdr.xml_data.size_in_wim = esd->hdr.xml_data.original_size = esd->xml.size;
     _fseeki64(esd->wim_file, esd->xml.offset, SEEK_SET);
     fwrite(esd->xml.data, (size_t)esd->xml.size, 1, esd->wim_file);
 
+    _fseeki64(esd->wim_file, esd->xml.offset + esd->xml.size, SEEK_SET);
     esd->hdr.integrity_table.offset_in_wim = _ftelli64(esd->wim_file);
     fwrite(new_integrity_table, new_integrity_table->size, 1, esd->wim_file);
     fflush(esd->wim_file);
@@ -409,8 +417,7 @@ BOOL update_wim_info(WIM_INFO *esd)
     int fd = _fileno(esd->wim_file);
     _chsize_s(fd, total_bytes);
 
-fail:
-    return success;
+    return TRUE;
 }
 
 void cleanup_resources(WIM_INFO *esd)
@@ -436,13 +443,13 @@ int wmain(int argc, WCHAR *argv[])
 
     if ( argc < 2 || argc > 3 )
     {
-        fwprintf(stderr, L"Usage: esddecrypt <encrypted esd> <base64 cryptokey>\n");
-        fwprintf(stderr, L"       *** Warning ***\n");
-        fwprintf(stderr, L"       The input will be directly OVERWRITTEN by the decrypted image!\n\n");
+        fwprintf(stderr, L"esddecrypt %s\n", VERSION);
+        fwprintf(stderr, L"https://github.com/whatever127/esddecrypt\n\n");
         fwprintf(stderr, L"Original code of the decrypter by qad:\n");
         fwprintf(stderr, L"https://forums.mydigitallife.net/posts/967554\n\n");
-        fwprintf(stderr, L"Updated source code:\n");
-        fwprintf(stderr, L"https://github.com/whatever127/esddecrypt\n");
+        fwprintf(stderr, L"Usage: %s <encrypted esd> <base64 cryptokey>\n", argv[0]);
+        fwprintf(stderr, L"       *** Warning ***\n");
+        fwprintf(stderr, L"       The input will be directly OVERWRITTEN by the decrypted image!\n");
         return ERROR_INVALID_PARAMETER;
     }
 
@@ -460,8 +467,8 @@ int wmain(int argc, WCHAR *argv[])
         !read_embedded_xml(&esd)
         )
     {
-        success = FALSE;
-        goto cleanup;
+        cleanup_resources(&esd);
+        return EXIT_FAILURE;
     }
 
     BOOL decryption_success = FALSE;
@@ -489,7 +496,6 @@ int wmain(int argc, WCHAR *argv[])
         success = FALSE;
     }
 
-cleanup:
     cleanup_resources(&esd);
     return success ? EXIT_SUCCESS : EXIT_FAILURE;
 }

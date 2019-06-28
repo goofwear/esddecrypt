@@ -1,5 +1,5 @@
 CC=g++
-CFLAGS= -Os -fpermissive -municode -static -Wall
+CFLAGS= -Os -municode -static -Wall
 LIBS= -lcrypt32
 
 all: esddecrypt32.exe esddecrypt64.exe
